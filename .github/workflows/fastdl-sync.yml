@@ -45,6 +45,7 @@ jobs:
           set ftp:passive-mode true
 
           mirror --verbose \
+            --include-glob=*/ \
             --include-glob=*.bsp \
             --include-glob=*.nav \
             --include-glob=*.mdl \
@@ -57,7 +58,10 @@ jobs:
             --include-glob=*.mp3 \
             --include-glob=*.dat \
             --include-glob=*.ttf \
-            --exclude-glob=* \
+            --exclude-glob=*.dem \
+            --exclude-glob=*.cfg \
+            --exclude-glob=*.log \
+            --exclude-glob=*.txt \
             "${FTP_REMOTE_PATH}" ftp_mirror
 
           quit
