@@ -1,34 +1,39 @@
-name: Sync FastDL from FTP
+name: sync-fastdl
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
   schedule:
-    - cron: "0 */2 * * *"
+    - cron: "0 * * * *"
 
 jobs:
   sync-fastdl:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install tools
+      - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y lftp bzip2
 
-      - name: Verify secrets are injected
+      - name: Verify secrets
         run: |
-          if [ -z "${{ secrets.FTP_HOST }}" ]; then echo "FTP_HOST MISSING"; exit 1; fi
-          if [ -z "${{ secrets.FTP_USERNAME }}" ]; then echo "FTP_USERNAME MISSING"; exit 1; fi
-          if [ -z "${{ secrets.FTP_PASSWORD }}" ]; then echo "FTP_PASSWORD MISSING"; exit 1; fi
-          if [ -z "${{ secrets.FTP_REMOTE_PATH }}" ]; then echo "FTP_REMOTE_PATH MISSING"; exit 1; fi
+          if [ -z "${FTP_HOST}" ]; then echo "FTP_HOST MISSING"; exit 1; fi
+          if [ -z "${FTP_USERNAME}" ]; then echo "FTP_USERNAME MISSING"; exit 1; fi
+          if [ -z "${FTP_PASSWORD}" ]; then echo "FTP_PASSWORD MISSING"; exit 1; fi
+          if [ -z "${FTP_REMOTE_PATH}" ]; then echo "FTP_REMOTE_PATH MISSING"; exit 1; fi
           echo "All secrets present"
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
 
-      - name: Mirror only FastDL directories from FTP
+      - name: Mirror FTP assets
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -36,7 +41,6 @@ jobs:
           FTP_REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
         run: |
           set -e
-
           rm -rf ftp_mirror
           mkdir -p ftp_mirror
 
@@ -55,22 +59,26 @@ jobs:
           quit
           EOF
 
-      - name: Prepare FastDL tree
+      - name: Debug mirror output
+        run: |
+          echo "==== FTP MIRROR RESULT ===="
+          ls -la ftp_mirror || true
+          find ftp_mirror -type f | head -n 100 || true
+
+      - name: Prepare cstrike folder
         run: |
           set -e
-
           rm -rf cstrike
           mkdir -p cstrike
-
           cp -a ftp_mirror/. cstrike/
 
-          rm -rf cstrike/cfg
-          rm -rf cstrike/logs
-          rm -rf cstrike/addons
-          rm -rf cstrike/demos
-          rm -rf cstrike/downloadlists
+          rm -rf cstrike/cfg || true
+          rm -rf cstrike/logs || true
+          rm -rf cstrike/addons || true
+          rm -rf cstrike/demos || true
+          rm -rf cstrike/downloadlists || true
 
-      - name: BZ2 compress FastDL content only
+      - name: Compress FastDL files
         run: |
           set -e
           find cstrike -type f \( \
