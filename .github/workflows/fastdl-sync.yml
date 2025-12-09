@@ -3,7 +3,7 @@ name: Sync FastDL from FTP
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "0 */2 * * *" # every 2 hours, adjust as needed
+    - cron: "0 */2 * * *"
 
 jobs:
   sync-fastdl:
@@ -43,27 +43,16 @@ jobs:
         run: |
           set -e
 
-          # Clean existing FastDL tree in repo
           rm -rf cstrike
           mkdir -p cstrike
 
-          # If your FTP_REMOTE_PATH already *is* cstrike, this copies 1:1.
-          # Otherwise adjust src paths below.
-          if [ -d "ftp_mirror/cstrike" ]; then
-            cp -a ftp_mirror/cstrike/. cstrike/
-          else
-            # fallback; adjust for your structure if needed
-            cp -a ftp_mirror/. cstrike/
-          fi
+          cp -a ftp_mirror/. cstrike/
 
-          # Optionally prune stuff you never want on FastDL (logs, cfg, etc.)
           rm -rf cstrike/cfg cstrike/logs cstrike/addons || true
 
       - name: BZ2 compress custom content
         run: |
           set -e
-          # Compress selected file types in-place for FastDL.
-          # Both plain and .bz2 will exist; Source prefers .bz2 when present.
           find cstrike -type f \( \
             -name "*.bsp" -o \
             -name "*.nav" -o \
@@ -83,8 +72,6 @@ jobs:
         run: |
           set -e
 
-          git status
-
           if git diff --quiet; then
             echo "No changes to commit."
             exit 0
@@ -94,5 +81,5 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add cstrike
-          git commit -m "Update FastDL from FTP $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          git commit -m "Update FastDL $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           git push origin HEAD
