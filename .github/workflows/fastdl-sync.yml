@@ -20,7 +20,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lftp bzip2
 
-      - name: Mirror SRCDS content from FTP
+      - name: Verify secrets are injected
+        run: |
+          if [ -z "${{ secrets.FTP_HOST }}" ]; then echo "FTP_HOST MISSING"; exit 1; fi
+          if [ -z "${{ secrets.FTP_USERNAME }}" ]; then echo "FTP_USERNAME MISSING"; exit 1; fi
+          if [ -z "${{ secrets.FTP_PASSWORD }}" ]; then echo "FTP_PASSWORD MISSING"; exit 1; fi
+          if [ -z "${{ secrets.FTP_REMOTE_PATH }}" ]; then echo "FTP_REMOTE_PATH MISSING"; exit 1; fi
+          echo "All secrets present"
+
+      - name: Mirror only FastDL file types from FTP
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -35,7 +43,23 @@ jobs:
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_HOST}" <<EOF
           set ssl:verify-certificate no
           set ftp:passive-mode true
-          mirror --verbose "${FTP_REMOTE_PATH}" ftp_mirror
+
+          mirror --verbose \
+            --include-glob=*.bsp \
+            --include-glob=*.nav \
+            --include-glob=*.mdl \
+            --include-glob=*.vvd \
+            --include-glob=*.vtx \
+            --include-glob=*.phy \
+            --include-glob=*.vmt \
+            --include-glob=*.vtf \
+            --include-glob=*.wav \
+            --include-glob=*.mp3 \
+            --include-glob=*.dat \
+            --include-glob=*.ttf \
+            --exclude-glob=* \
+            "${FTP_REMOTE_PATH}" ftp_mirror
+
           quit
           EOF
 
@@ -48,22 +72,28 @@ jobs:
 
           cp -a ftp_mirror/. cstrike/
 
-          rm -rf cstrike/cfg cstrike/logs cstrike/addons || true
+          rm -rf cstrike/cfg
+          rm -rf cstrike/logs
+          rm -rf cstrike/addons
+          rm -rf cstrike/demos
+          rm -rf cstrike/downloadlists
 
-      - name: BZ2 compress custom content
+      - name: BZ2 compress FastDL content only
         run: |
           set -e
           find cstrike -type f \( \
             -name "*.bsp" -o \
             -name "*.nav" -o \
             -name "*.mdl" -o \
-            -name "*.vtx" -o \
             -name "*.vvd" -o \
+            -name "*.vtx" -o \
             -name "*.phy" -o \
-            -name "*.vtf" -o \
             -name "*.vmt" -o \
+            -name "*.vtf" -o \
             -name "*.wav" -o \
-            -name "*.mp3" \
+            -name "*.mp3" -o \
+            -name "*.dat" -o \
+            -name "*.ttf" \
           \) -print0 | xargs -0 -n1 -P4 bzip2 -fz
 
       - name: Commit and push if changed
