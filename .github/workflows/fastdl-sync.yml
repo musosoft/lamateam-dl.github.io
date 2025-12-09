@@ -28,7 +28,7 @@ jobs:
           if [ -z "${{ secrets.FTP_REMOTE_PATH }}" ]; then echo "FTP_REMOTE_PATH MISSING"; exit 1; fi
           echo "All secrets present"
 
-      - name: Mirror only FastDL file types from FTP
+      - name: Mirror only FastDL directories from FTP
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
@@ -44,24 +44,13 @@ jobs:
           set ssl:verify-certificate no
           set ftp:passive-mode true
 
-          mirror --verbose \
-            --include-glob=*/ \
-            --include-glob=*.bsp \
-            --include-glob=*.nav \
-            --include-glob=*.mdl \
-            --include-glob=*.vvd \
-            --include-glob=*.vtx \
-            --include-glob=*.phy \
-            --include-glob=*.vmt \
-            --include-glob=*.vtf \
-            --include-glob=*.wav \
-            --include-glob=*.mp3 \
-            --include-glob=*.dat \
-            --include-glob=*.ttf \
-            --exclude-glob=*.dem \
-            --exclude-glob=*.cfg \
-            --exclude-glob=*.log \
-            --exclude-glob=*.txt \
+          # ONLY mirror real CS:S asset directories
+          mirror --verbose --only-newer \
+            --include "maps/" \
+            --include "materials/" \
+            --include "models/" \
+            --include "sound/" \
+            --exclude "*" \
             "${FTP_REMOTE_PATH}" ftp_mirror
 
           quit
