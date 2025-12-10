@@ -1,110 +1,40 @@
-name: FastDL Sync
+name: sync-fastdl
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *" # hourly; adjust as you like
 
 jobs:
   sync-fastdl:
     runs-on: ubuntu-24.04
 
+    env:
+      FTP_HOST: ${{ secrets.FTP_HOST }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+      FTP_REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
+
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install tools
+      - name: Install lftp and bzip2
         run: |
           sudo apt-get update
           sudo apt-get install -y lftp bzip2
 
-      - name: Verify secrets
-        env:
-          FTP_HOST: ${{ secrets.FTP_HOST }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
+      - name: Check required secrets
         run: |
-          set -e
-
-          if [ -z "$FTP_HOST" ]; then echo "FTP_HOST MISSING"; exit 1; fi
-          if [ -z "$FTP_USERNAME" ]; then echo "FTP_USERNAME MISSING"; exit 1; fi
-          if [ -z "$FTP_PASSWORD" ]; then echo "FTP_PASSWORD MISSING"; exit 1; fi
-          if [ -z "$FTP_REMOTE_PATH" ]; then echo "FTP_REMOTE_PATH MISSING"; exit 1; fi
-
+          if [ -z "${FTP_HOST}" ]; then echo "FTP_HOST MISSING"; exit 1; fi
+          if [ -z "${FTP_USERNAME}" ]; then echo "FTP_USERNAME MISSING"; exit 1; fi
+          if [ -z "${FTP_PASSWORD}" ]; then echo "FTP_PASSWORD MISSING"; exit 1; fi
+          if [ -z "${FTP_REMOTE_PATH}" ]; then echo "FTP_REMOTE_PATH MISSING"; exit 1; fi
           echo "All secrets present"
 
-      - name: Build lftp exclude list (repo + default maps by mtime)
-        env:
-          FTP_HOST: ${{ secrets.FTP_HOST }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
-        run: |
-          set -e
-
-          EXCLUDE_FILE=".lftp-exclude-glob.txt"
-          TMP_LIST="ftp_maps_listing.txt"
-
-          rm -f "$EXCLUDE_FILE" "$TMP_LIST"
-          touch "$EXCLUDE_FILE"
-
-          echo "==== Building exclude list from repo (already compressed) ===="
-
-          # Skip everything that already exists as .bz2 in repo
-          if [ -d cstrike ]; then
-            find cstrike -type f -name "*.bz2" | while read -r f; do
-              base="$(basename "$f")"
-              orig="${base%.bz2}"
-              echo "$orig"
-            done | sort -u >> "$EXCLUDE_FILE"
-          fi
-
-          echo "==== Detecting default maps by mtime of maps/test_speakers.bsp ===="
-
-          # Query FTP maps dir, get listing including test_speakers.bsp
-          lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_HOST}" <<EOF > "$TMP_LIST"
-          set ssl:verify-certificate no
-          set ftp:passive-mode true
-          set cmd:fail-exit yes
-          cd "${FTP_REMOTE_PATH}/maps"
-          cls -l test_speakers.bsp
-          cls -l
-          bye
-          EOF
-
-          if grep -q "test_speakers.bsp" "$TMP_LIST"; then
-            TS_SIG="$(awk '/test_speakers\.bsp$/ {print $(NF-3)" "$(NF-2)" "$(NF-1); exit}' "$TMP_LIST")"
-            if [ -n "$TS_SIG" ]; then
-              echo "Detected test_speakers.bsp time signature: '$TS_SIG'"
-              # Any .bsp with same date/time triple is treated as stock
-              awk -v sig="$TS_SIG" '
-                /[.]bsp$/ {
-                  curr=$(NF-3)" "$(NF-2)" "$(NF-1)
-                  if (curr == sig) {
-                    name=$NF
-                    print name
-                    sub(/[.]bsp$/, ".nav", name)
-                    print name
-                  }
-                }
-              ' "$TMP_LIST" >> "$EXCLUDE_FILE" || true
-            fi
-          else
-            echo "Warning: maps/test_speakers.bsp not found, skipping default-map mtime filter."
-          fi
-
-          sort -u "$EXCLUDE_FILE" -o "$EXCLUDE_FILE"
-
-          echo "==== FINAL EXCLUDE GLOBS (first 100) ===="
-          head -n 100 "$EXCLUDE_FILE" || true
-
-      - name: Mirror FTP -> ftp_mirror (only needed dirs and files)
-        env:
-          FTP_HOST: ${{ secrets.FTP_HOST }}
-          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
-          FTP_REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
+      - name: Mirror only FastDL-relevant content from FTP
         run: |
           set -e
 
@@ -112,89 +42,130 @@ jobs:
           mkdir -p ftp_mirror
 
           echo "Connecting to FTP and mirroring only maps/materials/models/sound/resource"
-
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_HOST}" <<EOF
           set ssl:verify-certificate no
           set ftp:passive-mode true
           set cmd:fail-exit yes
 
+          echo "=== PWD before cd ==="
+          pwd
+
+          echo "=== Listing root (top 50) ==="
+          cls -1 | head -n 50
+
+          echo "=== cd ${FTP_REMOTE_PATH} ==="
           cd "${FTP_REMOTE_PATH}"
 
+          echo "=== PWD after cd ==="
+          pwd
+
+          echo "=== Listing target dir (top 100) ==="
+          cls -1 | head -n 100
+
           echo "=== Mirroring maps -> ftp_mirror/maps ==="
-          mirror --verbose --only-newer \
-            --include-glob="*.bsp" \
-            --include-glob="*.nav" \
-            --include-glob="*.txt" \
-            --include-glob="*.cfg" \
-            --include-glob="*.res" \
-            --include-glob="*.dat" \
-            --include-glob="*.kv" \
-            --include-glob="*.lst" \
-            --exclude-glob-from=".lftp-exclude-glob.txt" \
-            maps ftp_mirror/maps
+          mirror --verbose --only-newer maps ftp_mirror/maps
 
           echo "=== Mirroring materials -> ftp_mirror/materials ==="
-          mirror --verbose --only-newer \
-            --include-glob="*.vmt" \
-            --include-glob="*.vtf" \
-            --include-glob="*.png" \
-            --include-glob="*.tga" \
-            --include-glob="*.vtz" \
-            --exclude-glob-from=".lftp-exclude-glob.txt" \
-            materials ftp_mirror/materials
+          mirror --verbose --only-newer materials ftp_mirror/materials
 
           echo "=== Mirroring models -> ftp_mirror/models ==="
-          mirror --verbose --only-newer \
-            --include-glob="*.mdl" \
-            --include-glob="*.vvd" \
-            --include-glob="*.vtx" \
-            --include-glob="*.phy" \
-            --exclude-glob-from=".lftp-exclude-glob.txt" \
-            models ftp_mirror/models
+          mirror --verbose --only-newer models ftp_mirror/models
 
           echo "=== Mirroring sound -> ftp_mirror/sound ==="
-          mirror --verbose --only-newer \
-            --include-glob="*.wav" \
-            --include-glob="*.mp3" \
-            --include-glob="*.ogg" \
-            --exclude-glob-from=".lftp-exclude-glob.txt" \
-            sound ftp_mirror/sound
+          mirror --verbose --only-newer sound ftp_mirror/sound
 
           echo "=== Mirroring resource -> ftp_mirror/resource ==="
-          mirror --verbose --only-newer \
-            --include-glob="*.res" \
-            --include-glob="*.cfg" \
-            --include-glob="*.txt" \
-            --include-glob="*.ttf" \
-            --include-glob="*.otf" \
-            --exclude-glob-from=".lftp-exclude-glob.txt" \
-            resource ftp_mirror/resource
+          mirror --verbose --only-newer resource ftp_mirror/resource
 
-          bye
+          quit
           EOF
 
-          echo "==== FTP MIRROR RESULT (top-level) ===="
+      - name: Show FTP mirror result and fail if empty
+        run: |
+          echo "==== FTP MIRROR RESULT ===="
           ls -la ftp_mirror || true
-          echo "==== Sample of mirrored files ===="
-          find ftp_mirror -type f | head -n 100 || true
+          echo "==== Sample files from ftp_mirror ===="
+          find ftp_mirror -type f | head -n 50 || true
 
-      - name: Build cstrike tree and compress FastDL files
+          if ! find ftp_mirror -type f | head -n 1 >/dev/null 2>&1; then
+            echo "ERROR: ftp_mirror is empty - check FTP_REMOTE_PATH and remote layout."
+            exit 1
+          fi
+
+      - name: Prune ftp_mirror (default maps by mtime + already uploaded files)
         run: |
           set -e
 
+          echo "==== Phase 1: prune default maps using mtime of maps/test_speakers.bsp ===="
+          if [ -f ftp_mirror/maps/test_speakers.bsp ]; then
+            ref_mtime=$(stat -c %Y ftp_mirror/maps/test_speakers.bsp)
+            echo "Reference mtime for default maps (test_speakers.bsp): ${ref_mtime}"
+
+            find ftp_mirror/maps -maxdepth 1 -type f -name "*.bsp" ! -name "test_speakers.bsp" -print0 \
+              | while IFS= read -r -d '' f; do
+                  mt=$(stat -c %Y "$f")
+                  if [ "$mt" = "$ref_mtime" ]; then
+                    base="$(basename "$f" .bsp)"
+                    echo "Removing default map: $f"
+                    rm -f "$f"
+                    if [ -f "ftp_mirror/maps/${base}.nav" ]; then
+                      echo "Removing paired NAV: ftp_mirror/maps/${base}.nav"
+                      rm -f "ftp_mirror/maps/${base}.nav"
+                    fi
+                  fi
+                done
+          else
+            echo "WARNING: ftp_mirror/maps/test_speakers.bsp not found, cannot filter default maps by mtime."
+          fi
+
+          echo "==== Phase 2: prune files already uploaded in repo (existing .bz2 in cstrike) ===="
+          if [ -d cstrike ]; then
+            tmp_exclude="$(mktemp)"
+            echo "Building list of already-uploaded files from repo cstrike/*.bz2"
+
+            find cstrike -type f -name "*.bz2" -print0 \
+              | while IFS= read -r -d '' f; do
+                  rel="${f#cstrike/}"
+                  rel="${rel#./}"
+                  rel_no_bz2="${rel%.bz2}"
+                  echo "$rel_no_bz2"
+                done | sort -u > "$tmp_exclude"
+
+            echo "First 50 entries from already-uploaded list (path without .bz2):"
+            head -n 50 "$tmp_exclude" || true
+
+            while IFS= read -r relpath; do
+              src="ftp_mirror/${relpath}"
+              if [ -f "$src" ]; then
+                echo "Removing already-uploaded source file (repo has .bz2): $src"
+                rm -f "$src"
+              fi
+            done < "$tmp_exclude"
+
+            rm -f "$tmp_exclude"
+          else
+            echo "Repo cstrike directory not present yet, skipping already-uploaded prune."
+          fi
+
+      - name: Prepare cstrike directory
+        run: |
+          set -e
           rm -rf cstrike
           mkdir -p cstrike
 
+          # Copy only the mirrored/pruned content into cstrike
           cp -a ftp_mirror/. cstrike/
 
+          # Strip server-only dirs if they somehow appear
           rm -rf cstrike/cfg || true
           rm -rf cstrike/logs || true
           rm -rf cstrike/addons || true
           rm -rf cstrike/demos || true
           rm -rf cstrike/downloadlists || true
-          rm -rf cstrike/bin || true
-          rm -rf cstrike/custom || true
 
+      - name: Compress FastDL-eligible files with bzip2
+        run: |
+          set -e
           find cstrike -type f \( \
             -name "*.bsp" -o \
             -name "*.nav" -o \
@@ -206,17 +177,11 @@ jobs:
             -name "*.vtf" -o \
             -name "*.wav" -o \
             -name "*.mp3" -o \
-            -name "*.ogg" -o \
             -name "*.dat" -o \
-            -name "*.kv"  -o \
-            -name "*.lst" -o \
-            -name "*.ttf" -o \
-            -name "*.otf" \
+            -name "*.ttf" \
           \) -print0 | xargs -0 -n1 -P4 bzip2 -fz
 
-      - name: Commit and push if changed
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit and push changes if any
         run: |
           set -e
 
@@ -228,7 +193,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add cstrike .lftp-exclude-glob.txt || true
+          git add cstrike
 
           git commit -m "Update FastDL $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           git push origin HEAD
