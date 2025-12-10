@@ -20,10 +20,10 @@ jobs:
 
       - name: Verify secrets
         env:
-          FTP_HOST: ${{ secrets.FASTDL_FTP_HOST }}
-          FTP_USERNAME: ${{ secrets.FASTDL_FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FASTDL_FTP_PASSWORD }}
-          FTP_REMOTE_PATH: ${{ secrets.FASTDL_FTP_REMOTE_PATH }}
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
         run: |
           set -e
 
@@ -36,10 +36,10 @@ jobs:
 
       - name: Build lftp exclude list (repo + default maps by mtime)
         env:
-          FTP_HOST: ${{ secrets.FASTDL_FTP_HOST }}
-          FTP_USERNAME: ${{ secrets.FASTDL_FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FASTDL_FTP_PASSWORD }}
-          FTP_REMOTE_PATH: ${{ secrets.FASTDL_FTP_REMOTE_PATH }}
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
         run: |
           set -e
 
@@ -51,7 +51,7 @@ jobs:
 
           echo "==== Building exclude list from repo (already compressed) ===="
 
-          # 1) Skip everything already present in repo as .bz2 (maps, navs, models, sounds, etc.)
+          # Skip everything that already exists as .bz2 in repo
           if [ -d cstrike ]; then
             find cstrike -type f -name "*.bz2" | while read -r f; do
               base="$(basename "$f")"
@@ -62,7 +62,7 @@ jobs:
 
           echo "==== Detecting default maps by mtime of maps/test_speakers.bsp ===="
 
-          # 2) Query FTP maps dir, grab listing including test_speakers.bsp
+          # Query FTP maps dir, get listing including test_speakers.bsp
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_HOST}" <<EOF > "$TMP_LIST"
           set ssl:verify-certificate no
           set ftp:passive-mode true
@@ -77,21 +77,21 @@ jobs:
             TS_SIG="$(awk '/test_speakers\.bsp$/ {print $(NF-3)" "$(NF-2)" "$(NF-1); exit}' "$TMP_LIST")"
             if [ -n "$TS_SIG" ]; then
               echo "Detected test_speakers.bsp time signature: '$TS_SIG'"
-              # Any .bsp with the same date/time triple is treated as stock
+              # Any .bsp with same date/time triple is treated as stock
               awk -v sig="$TS_SIG" '
                 /[.]bsp$/ {
                   curr=$(NF-3)" "$(NF-2)" "$(NF-1)
                   if (curr == sig) {
                     name=$NF
-                    print name           # bsp
+                    print name
                     sub(/[.]bsp$/, ".nav", name)
-                    print name           # corresponding nav (even if missing, harmless)
+                    print name
                   }
                 }
               ' "$TMP_LIST" >> "$EXCLUDE_FILE" || true
             fi
           else
-            echo "Warning: maps/test_speakers.bsp not found in FTP listing, skipping default-map mtime filter."
+            echo "Warning: maps/test_speakers.bsp not found, skipping default-map mtime filter."
           fi
 
           sort -u "$EXCLUDE_FILE" -o "$EXCLUDE_FILE"
@@ -101,10 +101,10 @@ jobs:
 
       - name: Mirror FTP -> ftp_mirror (only needed dirs and files)
         env:
-          FTP_HOST: ${{ secrets.FASTDL_FTP_HOST }}
-          FTP_USERNAME: ${{ secrets.FASTDL_FTP_USERNAME }}
-          FTP_PASSWORD: ${{ secrets.FASTDL_FTP_PASSWORD }}
-          FTP_REMOTE_PATH: ${{ secrets.FASTDL_FTP_REMOTE_PATH }}
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+          FTP_REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
         run: |
           set -e
 
@@ -151,7 +151,7 @@ jobs:
             --include-glob="*.phy" \
             --exclude-glob-from=".lftp-exclude-glob.txt" \
             models ftp_mirror/models
-        
+
           echo "=== Mirroring sound -> ftp_mirror/sound ==="
           mirror --verbose --only-newer \
             --include-glob="*.wav" \
@@ -159,7 +159,7 @@ jobs:
             --include-glob="*.ogg" \
             --exclude-glob-from=".lftp-exclude-glob.txt" \
             sound ftp_mirror/sound
-        
+
           echo "=== Mirroring resource -> ftp_mirror/resource ==="
           mirror --verbose --only-newer \
             --include-glob="*.res" \
@@ -169,7 +169,7 @@ jobs:
             --include-glob="*.otf" \
             --exclude-glob-from=".lftp-exclude-glob.txt" \
             resource ftp_mirror/resource
-        
+
           bye
           EOF
 
@@ -187,7 +187,6 @@ jobs:
 
           cp -a ftp_mirror/. cstrike/
 
-          # extra safety, but we only mirrored content dirs above anyway
           rm -rf cstrike/cfg || true
           rm -rf cstrike/logs || true
           rm -rf cstrike/addons || true
