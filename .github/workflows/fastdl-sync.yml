@@ -34,14 +34,14 @@ jobs:
           if [ -z "${FTP_REMOTE_PATH}" ]; then echo "FTP_REMOTE_PATH MISSING"; exit 1; fi
           echo "All secrets present"
 
-      - name: Mirror FTP to local ftp_mirror
+      - name: Mirror only FastDL-relevant content from FTP
         run: |
           set -e
 
           rm -rf ftp_mirror
           mkdir -p ftp_mirror
 
-          echo "Connecting to FTP and inspecting remote tree"
+          echo "Connecting to FTP and mirroring only maps/materials/models/sound/resource"
           lftp -u "${FTP_USERNAME},${FTP_PASSWORD}" "${FTP_HOST}" <<EOF
           set ssl:verify-certificate no
           set ftp:passive-mode true
@@ -59,11 +59,23 @@ jobs:
           echo "=== PWD after cd ==="
           pwd
 
-          echo "=== Listing target dir (top 200) ==="
-          cls -R | head -n 200
+          echo "=== Listing target dir (top 100) ==="
+          cls -1 | head -n 100
 
-          echo "=== Starting mirror from current dir to /ftp_mirror ==="
-          mirror --verbose --only-newer . ftp_mirror
+          echo "=== Mirroring maps -> ftp_mirror/maps ==="
+          mirror --verbose --only-newer maps ftp_mirror/maps
+
+          echo "=== Mirroring materials -> ftp_mirror/materials ==="
+          mirror --verbose --only-newer materials ftp_mirror/materials
+
+          echo "=== Mirroring models -> ftp_mirror/models ==="
+          mirror --verbose --only-newer models ftp_mirror/models
+
+          echo "=== Mirroring sound -> ftp_mirror/sound ==="
+          mirror --verbose --only-newer sound ftp_mirror/sound
+
+          echo "=== Mirroring resource -> ftp_mirror/resource ==="
+          mirror --verbose --only-newer resource ftp_mirror/resource
 
           quit
           EOF
@@ -80,16 +92,36 @@ jobs:
             exit 1
           fi
 
+      - name: Remove default maps by mtime of maps/test_speakers.bsp
+        run: |
+          set -e
+
+          if [ ! -f ftp_mirror/maps/test_speakers.bsp ]; then
+            echo "WARNING: ftp_mirror/maps/test_speakers.bsp not found, cannot filter default maps by mtime."
+            exit 0
+          fi
+
+          ref_mtime=$(stat -c %Y ftp_mirror/maps/test_speakers.bsp)
+          echo "Reference mtime for default maps (test_speakers.bsp): ${ref_mtime}"
+
+          find ftp_mirror/maps -maxdepth 1 -type f -name "*.bsp" ! -name "test_speakers.bsp" -print0 | while IFS= read -r -d '' f; do
+            mt=$(stat -c %Y "$f")
+            if [ "$mt" = "$ref_mtime" ]; then
+              echo "Removing default map (same mtime as test_speakers): $f"
+              rm -f "$f"
+            fi
+          done
+
       - name: Prepare cstrike directory
         run: |
           set -e
           rm -rf cstrike
           mkdir -p cstrike
 
-          # Copy everything from ftp_mirror into cstrike
+          # Copy only the mirrored content into cstrike (already pruned dirs)
           cp -a ftp_mirror/. cstrike/
 
-          # Strip server-only dirs if they exist
+          # Strip server-only dirs if they somehow appear
           rm -rf cstrike/cfg || true
           rm -rf cstrike/logs || true
           rm -rf cstrike/addons || true
