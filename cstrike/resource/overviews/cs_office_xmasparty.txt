@@ -1,0 +1,7 @@
+"cs_office_xmasparty"
+{
+	"material"	"overviews/cs_office_xmasparty"
+	"pos_x"	"-1857"
+	"pos_y"	"2336"
+	"scale"	"4.50"
+}

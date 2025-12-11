@@ -1,0 +1,7 @@
+"de_guard_csgo"
+{
+	"material"	"overviews/de_guard_csgo"
+	"pos_x"	"-5680"
+	"pos_y"	"4559"
+	"scale"	"8.00"
+}
