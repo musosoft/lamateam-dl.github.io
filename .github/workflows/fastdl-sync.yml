@@ -3,7 +3,7 @@ name: Smart FastDL Sync
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 * * *' # Runs daily at 4 AM
+    - cron: '0 4 * * *' # daily 04:00
 
 permissions:
   contents: write
@@ -16,100 +16,204 @@ jobs:
         uses: actions/checkout@v4
         with:
           lfs: true
+          fetch-depth: 0
 
       - name: Install Dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y lftp bzip2
 
-      - name: Calculate Sync Threshold
-        id: calc_date
+      - name: Build exclude lists
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USERNAME }}
           FTP_PASS: ${{ secrets.FTP_PASSWORD }}
           REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
         run: |
-          echo "::group::Timestamp Calculation"
-          
-          echo "Fetching timestamp of maps/test_speakers.bsp..."
-          
-          # We use 'cls -l' to get the standard long listing.
-          RAW_OUTPUT=$(lftp -u "$FTP_USER,$FTP_PASS" -e "set ssl:verify-certificate no; cd '$REMOTE_PATH'; cls -l maps/test_speakers.bsp; quit" "$FTP_HOST")
-          
-          echo "Raw FTP Output: $RAW_OUTPUT"
+          set -euo pipefail
+          mkdir -p _excludes
 
-          # Parse the date using Regex. 
-          # Matches standard Unix ls dates: "Mon DD HH:MM" (Recent) or "Mon DD YYYY" (Old)
-          # Regex logic: 3 letters (Month) -> space -> 1-2 digits (Day) -> space -> Time OR Year
-          EXTRACTED_DATE=$(echo "$RAW_OUTPUT" | grep -oE '[A-Za-z]{3}\s+[0-9]{1,2}\s+([0-9]{4}|[0-9]{1,2}:[0-9]{2})' | head -n 1)
-
-          if [ -z "$EXTRACTED_DATE" ]; then
-            echo "Error: Could not parse date from FTP output."
-            echo "Defaulting to full sync."
-            echo "SYNC_OPTS=" >> "$GITHUB_ENV"
-          else
-            echo "Server Ref Date (raw): $EXTRACTED_DATE"
-
-            # Decide if we got "Mon DD YYYY" (no time) or "Mon DD HH:MM" (with time)
-            if echo "$EXTRACTED_DATE" | grep -q ':'; then
-              echo "Parsed format: with time (Mon DD HH:MM)"
-              # Recent-style entry: add 30 minutes on top of the exact time
-              CUTOFF_DATE=$(date -d "$EXTRACTED_DATE + 30 minutes" "+%Y-%m-%d %H:%M:%S")
-            else
-              echo "Parsed format: date only (Mon DD YYYY)"
-              # Old-style entry: only day resolution. 
-              # Treat the whole EXTRACTED_DATE day as "default content day" and
-              # start safe zone at the beginning of the *next* day.
-              CUTOFF_DATE=$(date -d "$EXTRACTED_DATE + 1 day" "+%Y-%m-%d 00:00:00")
-            fi
-
-            echo "Safe Zone Start (used for --newer-than): $CUTOFF_DATE"
-            
-            echo "SYNC_OPTS=--newer-than='$CUTOFF_DATE'" >> "$GITHUB_ENV"
-          fi
-          echo "::endgroup::"
-
-      - name: Download Custom Content Only
-        env:
-          FTP_HOST: ${{ secrets.FTP_HOST }}
-          FTP_USER: ${{ secrets.FTP_USERNAME }}
-          FTP_PASS: ${{ secrets.FTP_PASSWORD }}
-          REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
-        run: |
-          echo "::group::FTP Smart Sync"
-          mkdir -p cstrike
-          
-          echo "Starting sync with options: $SYNC_OPTS"
-          
-          lftp -u "$FTP_USER,$FTP_PASS" "$FTP_HOST" <<EOF
-          set ssl:verify-certificate no
-          set ftp:passive-mode true
-          cd "$REMOTE_PATH"
-          
-          # We mirror specific folders using the computed time filter
-          # --delete is removed to prevent deleting local files if the filter excludes them this run
-          
-          mirror --continue $SYNC_OPTS --parallel=10 --verbose=1 maps cstrike/maps
-          mirror --continue $SYNC_OPTS --parallel=10 --verbose=1 materials cstrike/materials
-          mirror --continue $SYNC_OPTS --parallel=10 --verbose=1 models cstrike/models
-          mirror --continue $SYNC_OPTS --parallel=10 --verbose=1 sound cstrike/sound
-          mirror --continue $SYNC_OPTS --parallel=10 --verbose=1 resource cstrike/resource
-          quit
-          EOF
-          echo "::endgroup::"
-
-      - name: Compress & Clean
-        run: |
-          echo "::group::Compression"
-          # Compress new files to .bz2 and remove originals
-          find cstrike -type f \( -name "*.bsp" -o -name "*.nav" -o -name "*.mdl" -o -name "*.wav" -o -name "*.vmt" -o -name "*.vtf" \) -not -name "*.bz2" | while read FILE; do
-            if [ ! -f "${FILE}.bz2" ]; then
-              echo "Compressing: $FILE"
-              bzip2 -z -k "$FILE"
-              rm "$FILE"
-            fi
+          for d in maps materials models sound resource; do
+            : > "_excludes/${d}.txt"
           done
+
+          echo "::group::Reference listing (maps/test_speakers.bsp)"
+          RAW_REF=$(lftp -u "$FTP_USER,$FTP_PASS" -e "set ssl:verify-certificate no; cd '$REMOTE_PATH'; cls -l maps/test_speakers.bsp; quit" "$FTP_HOST")
+          echo "Raw: $RAW_REF"
+
+          # Parse Date Parts
+          REF_DAY=$(echo "$RAW_REF" | grep -oE '[A-Za-z]{3}\s+[0-9]{1,2}' | head -n 1 || true)
+          
+          # Check for HH:MM pattern (Recent file)
+          REF_HAS_TIME=0
+          if echo "$RAW_REF" | grep -qE '[0-9]{1,2}:[0-9]{2}'; then
+            REF_HAS_TIME=1
+          fi
+          
+          # Check for YYYY pattern (Old file)
+          REF_HAS_YEAR=0
+          if echo "$RAW_REF" | grep -qE '[0-9]{4}'; then
+            REF_HAS_YEAR=1
+          fi
+
+          if [ -z "$REF_DAY" ]; then
+            echo "ERROR: Could not parse reference day from maps/test_speakers.bsp"
+            exit 1
+          fi
+
+          echo "REF_DAY: $REF_DAY"
+          echo "REF_HAS_YEAR: $REF_HAS_YEAR"
+          echo "REF_HAS_TIME: $REF_HAS_TIME"
+          echo "::endgroup::"
+
+          echo "::group::Exclude default reinstall batch"
+          
+          # SAFETY RULE: Only exclude based on date if the reference file 
+          # is strictly "YYYY" format (meaning it has NO time).
+          # This prevents excluding custom files uploaded later on the reinstall day.
+          
+          fetch_default_day_excludes() {
+            local dir="$1"
+            local out="_excludes/${dir}.txt"
+
+            lftp -u "$FTP_USER,$FTP_PASS" -e "set ssl:verify-certificate no; cd '$REMOTE_PATH'; cls -l ${dir}; quit" "$FTP_HOST" \
+              | awk -v day="$REF_DAY" '
+                  $0 ~ day && $0 ~ /[0-9]{4}/ && $0 !~ /[0-9]{1,2}:[0-9]{2}/ { print $NF }
+                ' \
+              | sort -u >> "$out"
+          }
+
+          if [ "$REF_HAS_YEAR" = "1" ] && [ "$REF_HAS_TIME" = "0" ]; then
+            fetch_default_day_excludes maps
+            fetch_default_day_excludes materials
+            fetch_default_day_excludes models
+            fetch_default_day_excludes sound
+            fetch_default_day_excludes resource
+            echo "Default-day exclusion enabled (reference is strict Mon DD YYYY)."
+          else
+            echo "Default-day exclusion disabled (reference has time or mixed format)."
+            echo "Fallback will rely on repo-bz2 excludes only."
+          fi
+
+          for d in maps materials models sound resource; do
+            sort -u -o "_excludes/${d}.txt" "_excludes/${d}.txt"
+            echo "$d default-day excludes: $(wc -l < "_excludes/${d}.txt")"
+          done
+          echo "::endgroup::"
+
+          echo "::group::Exclude files already in repo"
+          if [ -d cstrike ]; then
+            find cstrike -type f -name "*.bz2" -print0 | while IFS= read -r -d '' f; do
+              rel="${f#cstrike/}"
+              dir="${rel%%/*}"
+              rest="${rel#*/}"
+              unbz2="${rest%.bz2}"
+
+              case "$dir" in
+                maps|materials|models|sound|resource)
+                  echo "$unbz2" >> "_excludes/${dir}.txt"
+                  ;;
+              esac
+            done
+          fi
+
+          for d in maps materials models sound resource; do
+            sort -u -o "_excludes/${d}.txt" "_excludes/${d}.txt"
+            echo "$d total excludes: $(wc -l < "_excludes/${d}.txt")"
+          done
+          echo "::endgroup::"
+
+      - name: Mirror from FTP into temp folder
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USERNAME }}
+          FTP_PASS: ${{ secrets.FTP_PASSWORD }}
+          REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
+        run: |
+          set -euo pipefail
+          echo "::group::FTP Smart Mirror"
+
+          rm -rf _ftp
+          mkdir -p _ftp/{maps,materials,models,sound,resource}
+
+          build_exclude_cmd_fragment() {
+            local file="$1"
+            local frag=""
+            if [ -s "$file" ]; then
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                # FIX: Added escaped quotes \"$line\" to handle filenames with spaces safely
+                frag="$frag --exclude-glob \"$line\""
+              done < "$file"
+            fi
+            echo "$frag"
+          }
+
+          MAPS_EXC=$(build_exclude_cmd_fragment "_excludes/maps.txt")
+          MATS_EXC=$(build_exclude_cmd_fragment "_excludes/materials.txt")
+          MODS_EXC=$(build_exclude_cmd_fragment "_excludes/models.txt")
+          SND_EXC=$(build_exclude_cmd_fragment "_excludes/sound.txt")
+          RES_EXC=$(build_exclude_cmd_fragment "_excludes/resource.txt")
+
+          # We construct the command string manually to handle the quotes correctly
+          lftp -c "
+            open -u '$FTP_USER','$FTP_PASS' '$FTP_HOST';
+            set ssl:verify-certificate no;
+            set ftp:passive-mode true;
+            set cmd:fail-exit yes;
+            cd '$REMOTE_PATH';
+            mirror --continue --parallel=10 --verbose=1 $MAPS_EXC maps _ftp/maps;
+            mirror --continue --parallel=10 --verbose=1 $MATS_EXC materials _ftp/materials;
+            mirror --continue --parallel=10 --verbose=1 $MODS_EXC models _ftp/models;
+            mirror --continue --parallel=10 --verbose=1 $SND_EXC sound _ftp/sound;
+            mirror --continue --parallel=10 --verbose=1 $RES_EXC resource _ftp/resource;
+            quit"
+
+          echo "::endgroup::"
+
+      - name: Compress to bz2-only and stage
+        run: |
+          set -euo pipefail
+          echo "::group::Compress + bz2-only staging"
+
+          rm -rf _out
+          mkdir -p _out
+          cp -a _ftp/. _out/
+
+          # Compress targets
+          find _out -type f \( \
+            -name "*.bsp" -o -name "*.nav" -o -name "*.mdl" -o \
+            -name "*.vvd" -o -name "*.vtx" -o -name "*.phy" -o \
+            -name "*.vmt" -o -name "*.vtf" -o -name "*.wav" -o \
+            -name "*.mp3" -o -name "*.pcf" -o -name "*.res" \
+          \) -print0 | while IFS= read -r -d '' f; do
+            bzip2 -f -k "$f"
+            rm -f "$f"
+          done
+
+          # Delete leftovers
+          find _out -type f \( \
+            -name "*.bsp" -o -name "*.nav" -o -name "*.mdl" -o \
+            -name "*.vvd" -o -name "*.vtx" -o -name "*.phy" -o \
+            -name "*.vmt" -o -name "*.vtf" -o -name "*.wav" -o \
+            -name "*.mp3" -o -name "*.pcf" -o -name "*.res" \
+          \) -delete || true
+
+          rm -rf cstrike
+          mkdir -p cstrike
+          cp -a _out/. cstrike/
+
+          # Verification Check
+          if find cstrike -type f \( \
+            -name "*.bsp" -o -name "*.nav" -o -name "*.mdl" -o \
+            -name "*.vvd" -o -name "*.vtx" -o -name "*.phy" -o \
+            -name "*.vmt" -o -name "*.vtf" -o -name "*.wav" -o \
+            -name "*.mp3" -o -name "*.pcf" -o -name "*.res" \
+          \) | head -n 1 | grep -q .; then
+            echo "ERROR: raw (non-bz2) FastDL assets still exist in cstrike/"
+            exit 1
+          fi
+
           echo "::endgroup::"
 
       - name: Push Updates
