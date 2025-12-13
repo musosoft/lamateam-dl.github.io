@@ -24,64 +24,95 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y lftp bzip2 rsync
 
-      - name: Build excludes from repo (prevent re-download)
+      - name: Build exclude lists
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USERNAME }}
+          FTP_PASS: ${{ secrets.FTP_PASSWORD }}
+          REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
         run: |
           set -euo pipefail
+
+          : "${FTP_HOST:?missing FTP_HOST}"
+          : "${FTP_USER:?missing FTP_USER}"
+          : "${FTP_PASS:?missing FTP_PASS}"
+          : "${REMOTE_PATH:?missing REMOTE_PATH}"
+
           mkdir -p _excludes
-          
+
           for d in maps materials models sound resource_overviews; do
             : > "_excludes/${d}.txt"
           done
-          
-          # 1) Repo-based excludes (prevent re-download)
+
+          echo "::group::Repo-based excludes (prevent re-download)"
           if [ -d cstrike ]; then
             find cstrike -type f -name "*.bz2" -print0 | while IFS= read -r -d '' f; do
               rel="${f#cstrike/}"
+
               case "$rel" in
-                maps/*)               echo "${rel#maps/}"               | sed 's/\.bz2$//' >> "_excludes/maps.txt" ;;
-                materials/*)          echo "${rel#materials/}"          | sed 's/\.bz2$//' >> "_excludes/materials.txt" ;;
-                models/*)             echo "${rel#models/}"             | sed 's/\.bz2$//' >> "_excludes/models.txt" ;;
-                sound/*)              echo "${rel#sound/}"              | sed 's/\.bz2$//' >> "_excludes/sound.txt" ;;
-                resource/overviews/*) echo "${rel#resource/overviews/}" | sed 's/\.bz2$//' >> "_excludes/resource_overviews.txt" ;;
+                maps/*)
+                  echo "${rel#maps/}" | sed 's/\.bz2$//' >> "_excludes/maps.txt"
+                  ;;
+                materials/*)
+                  echo "${rel#materials/}" | sed 's/\.bz2$//' >> "_excludes/materials.txt"
+                  ;;
+                models/*)
+                  echo "${rel#models/}" | sed 's/\.bz2$//' >> "_excludes/models.txt"
+                  ;;
+                sound/*)
+                  echo "${rel#sound/}" | sed 's/\.bz2$//' >> "_excludes/sound.txt"
+                  ;;
+                resource/overviews/*)
+                  echo "${rel#resource/overviews/}" | sed 's/\.bz2$//' >> "_excludes/resource_overviews.txt"
+                  ;;
               esac
             done
           fi
-          
-          # 2) Default reinstall batch excludes for maps (your "missing timestamp" trap)
-          # Only enabled when reference shows "Mon DD YYYY" (no HH:MM)
+          echo "::endgroup::"
+
+          echo "::group::Reference listing (maps/test_speakers.bsp)"
           RAW_REF=$(lftp -u "$FTP_USER,$FTP_PASS" -e "set ssl:verify-certificate no; cd '$REMOTE_PATH'; cls -l maps/test_speakers.bsp; quit" "$FTP_HOST")
-          
+          echo "Raw: $RAW_REF"
+
           REF_HAS_TIME=0
           echo "$RAW_REF" | grep -qE '[0-9]{1,2}:[0-9]{2}' && REF_HAS_TIME=1
-          
+
           REF_SIG=""
           if [ "$REF_HAS_TIME" = "0" ]; then
-            REF_SIG=$(echo "$RAW_REF" | grep -oE '[A-Za-z]{3}\s+[0-9]{1,2}\s+[0-9]{4}' | head -n 1 || true)
+            REF_SIG=$(echo "$RAW_REF" | grep -oE '[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{4}' | head -n 1 || true)
           fi
-          
+
+          echo "REF_HAS_TIME=$REF_HAS_TIME"
+          echo "REF_SIG='$REF_SIG'"
+          echo "::endgroup::"
+
+          echo "::group::Default reinstall batch excludes (maps)"
           if [ -n "$REF_SIG" ]; then
-            echo "Default-map exclusion enabled (reference is date-only): $REF_SIG"
-          
+            echo "Enabled: excluding all maps with same date-only signature as reference: $REF_SIG"
+
             lftp -u "$FTP_USER,$FTP_PASS" -e "set ssl:verify-certificate no; cd '$REMOTE_PATH'; cls -l maps; quit" "$FTP_HOST" \
               | awk -v ref="$REF_SIG" '
-                  # match exact "Mon DD YYYY" signature, but skip anything with HH:MM
                   $0 ~ ref && $0 !~ /[0-9]{1,2}:[0-9]{2}/ { print $NF }
                 ' \
               | sort -u >> "_excludes/maps.txt"
-          
           else
-            echo "Default-map exclusion disabled (reference has HH:MM or not parseable)."
+            echo "Disabled: reference uses HH:MM (or not parseable)."
           fi
-          
-          # Always exclude the references explicitly
+          echo "::endgroup::"
+
+          echo "::group::Always exclude reference test maps"
           echo "test_speakers.bsp" >> "_excludes/maps.txt"
           echo "test_hardware.bsp" >> "_excludes/maps.txt"
-          
-          # Final dedupe
+          echo "::endgroup::"
+
+          echo "::group::Finalize exclude lists"
           for d in maps materials models sound resource_overviews; do
             sort -u -o "_excludes/${d}.txt" "_excludes/${d}.txt"
             echo "$d excludes total: $(wc -l < "_excludes/${d}.txt")"
+            echo "First 20 $d excludes:"
+            head -n 20 "_excludes/${d}.txt" || true
           done
+          echo "::endgroup::"
 
       - name: Mirror allowlisted custom content only
         env:
