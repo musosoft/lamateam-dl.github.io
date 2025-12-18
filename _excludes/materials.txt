@@ -1,0 +1,13 @@
+materials/models/
+overviews/cs_office_xmasparty.vmt
+overviews/cs_office_xmasparty.vtf
+overviews/cs_office_xmasparty_radar.vmt
+overviews/de_dust2_xmas_2023.vmt
+overviews/de_dust2_xmas_2023.vtf
+overviews/de_dust2_xmas_2023_radar.vmt
+overviews/de_guard_csgo.vmt
+overviews/de_guard_csgo.vtf
+overviews/de_guard_csgo_radar.vmt
+overviews/de_xmas_westwood.vmt
+overviews/de_xmas_westwood.vtf
+overviews/de_xmas_westwood_radar.vmt
