@@ -1,7 +1,0 @@
-"de_xmas_westwood"
-{
-	"material"	"overviews/de_xmas_westwood"
-	"pos_x"	"-409"
-	"pos_y"	"2933"
-	"scale"	"4.00"
-}

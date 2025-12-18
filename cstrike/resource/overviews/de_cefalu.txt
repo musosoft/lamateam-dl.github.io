@@ -1,7 +1,0 @@
-"de_cefalu"
-{
-	"material"	"overviews/de_cefalu"
-	"pos_x"	"-4942"
-	"pos_y"	"2947"
-	"scale"	"5.20"
-}

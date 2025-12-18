@@ -1,7 +1,0 @@
-"de_dust2_xmas_2023"
-{
-	"material"	"overviews/de_dust2_xmas_2023"
-	"pos_x"	"-6836"
-	"pos_y"	"3882"
-	"scale"	"5.30"
-}

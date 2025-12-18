@@ -1,7 +1,0 @@
-"de_overpass_lt"
-{
-	"material"	"overviews/de_overpass_lt"
-	"pos_x"	"-4958"
-	"pos_y"	"2065"
-	"scale"	"6.30"
-}

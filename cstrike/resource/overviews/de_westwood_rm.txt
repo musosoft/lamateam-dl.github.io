@@ -1,9 +1,0 @@
-"de_westwood_rm"
-
-{
-"material" "overviews/de_westwood_rm"
-
-"pos_x" "-456"
-"pos_y" "2663"
-"scale" "3.60"
-}

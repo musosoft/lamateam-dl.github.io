@@ -1,7 +1,0 @@
-"de_russka_lt"
-{
-	"material"	"overviews/de_russka_lt"
-	"pos_x"	"-2350"
-	"pos_y"	"3849"
-	"scale"	"6.65"
-}

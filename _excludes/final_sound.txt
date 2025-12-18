@@ -1,0 +1,7 @@
+admin_plugin/actions/endofvote.mp3
+admin_plugin/actions/startyourvoting.mp3
+nippersounds/nm_goodbadugly.wav
+nippersounds/nm_xmas_bells.wav
+nippersounds/nm_xmas_futuramahoho.wav
+nippersounds/nm_xmas_snl.wav
+sound/admin_plugin/

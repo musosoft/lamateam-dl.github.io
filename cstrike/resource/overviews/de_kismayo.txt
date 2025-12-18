@@ -1,7 +1,0 @@
-"de_kismayo"
-{
-	"material"	"overviews/de_kismayo"
-	"pos_x"	"-5290"
-	"pos_y"	"4001"
-	"scale"	"8.60"
-}

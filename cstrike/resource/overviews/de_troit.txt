@@ -1,9 +1,0 @@
-<de_riverwalk>
-{
-	material	overviews/de_troit	// texture file
-	pos_x		-4067			// X coordinate
-	pos_y		6607			// Y coordinate
-	scale		10.1		// scale used when taking the screenshot
-	rotate		0			// map was rotated by 90 degrees in image editor
-	zoom		1			// optimal zoom factor if map is shown in full size
-}
