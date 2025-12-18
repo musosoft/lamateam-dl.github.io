@@ -3,7 +3,7 @@ name: Smart FastDL Sync
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 4 * * *' # daily 04:00
+    - cron: '0 4 * * *' # Daily at 4 AM
 
 permissions:
   contents: write
@@ -23,7 +23,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y lftp bzip2 rsync
 
-      - name: Build exclude lists
+      - name: Check Reference & Cache
+        id: check_cache
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USERNAME }}
@@ -32,81 +33,127 @@ jobs:
         run: |
           set -euo pipefail
           
-          # 1. Setup Exclude Directory
-          mkdir -p _excludes
-          for d in maps materials models sound resource_overviews; do
-            : > "_excludes/${d}.txt"
-          done
+          # 1. Get current signature from FTP
+          echo "Connecting to check Reference File (test_speakers.bsp)..."
+          RAW_REF=$(lftp -u "$FTP_USER,$FTP_PASS" -e "set ssl:verify-certificate no; cd '$REMOTE_PATH'; cls -l maps/test_speakers.bsp; quit" "$FTP_HOST")
+          
+          # Extract Date Part (Month Day Year). Strict YYYY format expected as per user rule.
+          # Regex matches: 3 letters (Month), Spaces, 1-2 Digits (Day), Spaces, 4 Digits (Year)
+          # Example: "Dec 18 2025"
+          CURRENT_SIG=$(echo "$RAW_REF" | grep -oE '[A-Za-z]{3}\s+[0-9]{1,2}\s+[0-9]{4}' | head -n 1 || true)
+          
+          echo "Current FTP Signature: '$CURRENT_SIG'"
+          
+          # 2. Compare with Cached Signature
+          CACHE_FILE="_excludes/reference.sig"
+          NEEDS_UPDATE="true"
+          
+          if [ -f "$CACHE_FILE" ]; then
+            CACHED_SIG=$(cat "$CACHE_FILE")
+            if [ "$CURRENT_SIG" == "$CACHED_SIG" ] && [ -n "$CURRENT_SIG" ]; then
+              echo "✅ Cache Hit! Server signature matches cached signature."
+              NEEDS_UPDATE="false"
+            else
+              echo "⚠️  Cache Miss/Expired. Server changed or first run."
+            fi
+          fi
+          
+          echo "needs_update=$NEEDS_UPDATE" >> $GITHUB_OUTPUT
+          echo "current_sig=$CURRENT_SIG" >> $GITHUB_OUTPUT
 
-          echo "::group::Repo-based excludes (prevent re-download)"
-          # Optimization: Don't download what we already have compressed in the repo
+      - name: Build Exclude Lists (If Cache Expired)
+        if: steps.check_cache.outputs.needs_update == 'true'
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USERNAME }}
+          FTP_PASS: ${{ secrets.FTP_PASSWORD }}
+          REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
+          REF_SIG: ${{ steps.check_cache.outputs.current_sig }}
+        run: |
+          set -euo pipefail
+          
+          echo "::group::Generating New Exclude Lists"
+          mkdir -p _excludes
+          
+          # Save new signature
+          echo "$REF_SIG" > "_excludes/reference.sig"
+          
+          if [ -z "$REF_SIG" ]; then
+            echo "❌ ERROR: No Year-based date found on test_speakers.bsp. Cannot build exclude list based on 'No Timestamp' rule."
+            echo "Falling back to empty excludes (Download All Safe Mode)."
+            for d in maps materials models sound resource; do : > "_excludes/${d}.txt"; done
+            exit 0
+          fi
+          
+          echo "Scanning FTP for files matching exactly: '$REF_SIG' (With NO timestamp)"
+
+          build_list() {
+            local dir=$1
+            echo "Scanning $dir..."
+            # Logic:
+            # 1. cls -l: Get list
+            # 2. awk: 
+            #    - Must match REF_SIG (Same Date)
+            #    - Must match /[0-9]{4}/ (Have a Year)
+            #    - Must NOT match /:[0-9]{2}/ (Must NOT have a timestamp)
+            lftp -u "$FTP_USER,$FTP_PASS" -e "set ssl:verify-certificate no; cd '$REMOTE_PATH'; cls -l $dir; quit" "$FTP_HOST" \
+            | awk -v ref="$REF_SIG" '$0 ~ ref && $0 ~ /[0-9]{4}/ && $0 !~ /:[0-9]{2}/ { print $NF }' \
+            | sort -u > "_excludes/${dir}.txt"
+          }
+          
+          build_list "maps"
+          build_list "materials"
+          build_list "models"
+          build_list "sound"
+          
+          # Resource is special, usually just overviews needed
+          build_list "resource" 
+
+          # Always exclude the test files themselves
+          echo "test_speakers.bsp" >> "_excludes/maps.txt"
+          echo "test_hardware.bsp" >> "_excludes/maps.txt"
+          
+          echo "::endgroup::"
+
+      - name: Update Repo-Based Excludes (Always Run)
+        run: |
+          set -euo pipefail
+          echo "::group::Merging Repo-Existing Files into Excludes"
+          # Even if cache is valid, we might have new bz2 files in repo from a manual push.
+          # Add them to excludes so we don't re-download them.
+          
           if [ -d cstrike ]; then
             find cstrike -type f -name "*.bz2" -print0 | while IFS= read -r -d '' f; do
               rel="${f#cstrike/}"
-              
-              # Map local repo path to remote FTP path structure
               case "$rel" in
-                maps/*)
-                  echo "${rel#maps/}" | sed 's/\.bz2$//' >> "_excludes/maps.txt" ;;
-                materials/*)
-                  echo "${rel#materials/}" | sed 's/\.bz2$//' >> "_excludes/materials.txt" ;;
-                models/*)
-                  echo "${rel#models/}" | sed 's/\.bz2$//' >> "_excludes/models.txt" ;;
-                sound/*)
-                  echo "${rel#sound/}" | sed 's/\.bz2$//' >> "_excludes/sound.txt" ;;
-                resource/overviews/*)
-                  echo "${rel#resource/overviews/}" | sed 's/\.bz2$//' >> "_excludes/resource_overviews.txt" ;;
+                maps/*) echo "${rel#maps/}" | sed 's/\.bz2$//' >> "_excludes/maps.txt" ;;
+                materials/*) echo "${rel#materials/}" | sed 's/\.bz2$//' >> "_excludes/materials.txt" ;;
+                models/*) echo "${rel#models/}" | sed 's/\.bz2$//' >> "_excludes/models.txt" ;;
+                sound/*) echo "${rel#sound/}" | sed 's/\.bz2$//' >> "_excludes/sound.txt" ;;
+                resource/*) echo "${rel#resource/}" | sed 's/\.bz2$//' >> "_excludes/resource.txt" ;;
               esac
             done
           fi
-          echo "::endgroup::"
-
-          echo "::group::Reference Signature (maps/test_speakers.bsp)"
-          # 2. Get the "Valve Default" timestamp
-          RAW_REF=$(lftp -u "$FTP_USER,$FTP_PASS" -e "set ssl:verify-certificate no; cd '$REMOTE_PATH'; cls -l maps/test_speakers.bsp; quit" "$FTP_HOST")
-          echo "Raw: $RAW_REF"
-
-          # Extract the date part (Month Day Year/Time). 
-          # We take columns 5-8 roughly, depending on formatting.
-          # Strategy: Extract the Month (3 letters) and everything after it until the filename.
-          REF_SIG=$(echo "$RAW_REF" | grep -oE '[A-Za-z]{3}\s+[0-9]{1,2}\s+([0-9]{4}|[0-9]{1,2}:[0-9]{2})' | head -n 1 || true)
           
-          if [ -z "$REF_SIG" ]; then
-             echo "WARNING: Could not determine reference signature. Default maps might be downloaded."
-          else
-             echo "Detected Default Signature: '$REF_SIG'"
-          fi
-          echo "::endgroup::"
-
-          echo "::group::Default reinstall batch excludes"
-          # 3. Exclude ANYTHING that matches the reference signature exactly
-          if [ -n "$REF_SIG" ]; then
-            echo "Excluding files matching: $REF_SIG"
-            
-            # Helper to fetch and filter
-            fetch_and_filter() {
-              local dir=$1
-              local target=$2
-              lftp -u "$FTP_USER,$FTP_PASS" -e "set ssl:verify-certificate no; cd '$REMOTE_PATH'; cls -l $dir; quit" "$FTP_HOST" \
-                | awk -v ref="$REF_SIG" '$0 ~ ref { print $NF }' \
-                | sort -u >> "_excludes/$target.txt"
-            }
-            
-            fetch_and_filter "maps" "maps"
-            # We can optionally filter other folders, but maps are the biggest bloat
-            # fetch_and_filter "models" "models" 
-          fi
-          echo "::endgroup::"
-
-          # 4. Always exclude specific known Valve test files
-          echo "test_speakers.bsp" >> "_excludes/maps.txt"
-          echo "test_hardware.bsp" >> "_excludes/maps.txt"
-
-          echo "::group::Finalize exclude lists"
-          for d in maps materials models sound resource_overviews; do
-            sort -u -o "_excludes/${d}.txt" "_excludes/${d}.txt"
-            echo "$d excludes total: $(wc -l < "_excludes/${d}.txt")"
+          # Clean up lists (sort and unique)
+          for d in maps materials models sound resource; do
+            if [ -f "_excludes/${d}.txt" ]; then
+              sort -u -o "_excludes/${d}.txt" "_excludes/${d}.txt"
+            else
+              touch "_excludes/${d}.txt"
+            fi
           done
+          echo "::endgroup::"
+
+      - name: 🔍 Log All Excluded Files
+        run: |
+          echo "::group::VIEW EXCLUDED FILES (Spoiler)"
+          echo "--- MAPS ---"
+          cat _excludes/maps.txt || true
+          echo -e "\n--- MATERIALS ---"
+          cat _excludes/materials.txt || true
+          echo -e "\n--- MODELS ---"
+          cat _excludes/models.txt || true
           echo "::endgroup::"
 
       - name: Mirror Custom Content
@@ -117,33 +164,12 @@ jobs:
           REMOTE_PATH: ${{ secrets.FTP_REMOTE_PATH }}
         run: |
           set -euo pipefail
-
           rm -rf _ftp
-          mkdir -p _ftp/maps _ftp/materials _ftp/models _ftp/sound _ftp/resource/overviews
+          mkdir -p _ftp/maps _ftp/materials _ftp/models _ftp/sound _ftp/resource
 
-          # Function to build lftp exclude arguments safely
-          build_args() {
-            local list="$1"
-            local args=""
-            if [ -s "$list" ]; then
-              while IFS= read -r line; do
-                [ -z "$line" ] && continue
-                # Escape quotes to prevent lftp command injection
-                args="$args --exclude-glob \"$line\""
-              done < "$list"
-            fi
-            echo "$args"
-          }
-
-          MAPS_ARGS=$(build_args "_excludes/maps.txt")
-          MATS_ARGS=$(build_args "_excludes/materials.txt")
-          MODS_ARGS=$(build_args "_excludes/models.txt")
-          SND_ARGS=$(build_args "_excludes/sound.txt")
-          OV_ARGS=$(build_args "_excludes/resource_overviews.txt")
-
-          echo "Starting FTP Mirror..."
+          echo "::group::📥 DOWNLOADING FILES (Spoiler)"
           
-          # Use 'lftp -c' for safer command execution
+          # We use --exclude-glob-from to safely load the text files
           lftp -c "
             set cmd:fail-exit yes;
             set ssl:verify-certificate no;
@@ -151,82 +177,70 @@ jobs:
             open -u '$FTP_USER','$FTP_PASS' '$FTP_HOST';
             cd '$REMOTE_PATH';
 
-            mirror --continue --parallel=3 --verbose=1 \
-              --exclude-glob \"*\" \
+            mirror --continue --parallel=5 --verbose=1 \
+              --exclude-glob-from=_excludes/maps.txt \
               --include-glob \"*.bsp\" --include-glob \"*.nav\" --include-glob \"*.res\" \
-              $MAPS_ARGS maps _ftp/maps;
+              maps _ftp/maps;
 
-            mirror --continue --parallel=3 --verbose=1 \
-              --exclude-glob \"*\" \
+            mirror --continue --parallel=5 --verbose=1 \
+              --exclude-glob-from=_excludes/materials.txt \
               --include-glob \"*.vmt\" --include-glob \"*.vtf\" \
-              $MATS_ARGS materials _ftp/materials;
+              materials _ftp/materials;
 
-            mirror --continue --parallel=3 --verbose=1 \
-              --exclude-glob \"*\" \
+            mirror --continue --parallel=5 --verbose=1 \
+              --exclude-glob-from=_excludes/models.txt \
               --include-glob \"*.mdl\" --include-glob \"*.vvd\" --include-glob \"*.vtx\" --include-glob \"*.phy\" \
-              $MODS_ARGS models _ftp/models;
+              models _ftp/models;
 
-            mirror --continue --parallel=3 --verbose=1 \
-              --exclude-glob \"*\" \
+            mirror --continue --parallel=5 --verbose=1 \
+              --exclude-glob-from=_excludes/sound.txt \
               --include-glob \"*.wav\" --include-glob \"*.mp3\" \
-              $SND_ARGS sound _ftp/sound;
+              sound _ftp/sound;
 
-            mirror --continue --parallel=3 --verbose=1 \
-              --exclude-glob \"*\" \
+            mirror --continue --parallel=5 --verbose=1 \
+              --exclude-glob-from=_excludes/resource.txt \
               --include-glob \"*.txt\" \
-              $OV_ARGS resource/overviews _ftp/resource/overviews;
+              resource _ftp/resource;
             
             quit
           "
+          echo "::endgroup::"
 
       - name: Compress and Merge
         run: |
           set -euo pipefail
-
-          echo "::group::Compressing files"
+          
           mkdir -p _out
-          # Copy mirrored files to output staging
           rsync -a _ftp/ _out/
 
-          # Find relevant files to compress
-          # CRASH FIX: Added '! -type l' to skip symlinks and '-s' check inside loop
+          echo "::group::📦 COMPRESSING FILES (Spoiler)"
+          
+          # Find and compress. ! -type l avoids symlink crashes.
           find _out -type f ! -type l \( \
             -name "*.bsp" -o -name "*.nav" -o -name "*.res" -o \
             -name "*.vmt" -o -name "*.vtf" -o \
             -name "*.mdl" -o -name "*.vvd" -o -name "*.vtx" -o -name "*.phy" -o \
             -name "*.wav" -o -name "*.mp3" -o \
-            -path "*/resource/overviews/*.txt" \
+            -name "*.txt" \
           \) -print0 | while IFS= read -r -d '' f; do
-            
-            # Safety check: ensure file exists and is not empty
             if [ -s "$f" ]; then
-              # Attempt compression. If fails, print warning but don't crash script immediately
               if bzip2 -z -f "$f"; then
-                # Success - original is removed by bzip2 automatically (without -k)
-                # If you prefer keeping original for some reason use -k, but standard FastDL replaces it.
-                # Assuming we want ONLY .bz2 in the repo:
-                :
+                echo "Compressed: ${f##*/}"
               else
                 echo "WARNING: Failed to compress $f"
               fi
-            else
-              echo "Skipping empty or invalid file: $f"
             fi
           done
           echo "::endgroup::"
 
-          echo "::group::Merging into Repository"
+          # Merge into repo
           mkdir -p cstrike
-          
-          # SAFETY: rsync -a adds new files but DOES NOT delete existing repo files
           rsync -av _out/ cstrike/
-          
-          echo "Repo merge complete."
-          echo "::endgroup::"
 
-      - name: Push Updates
+      - name: Push Updates (Content & Cache)
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "FastDL: Sync custom content"
           branch: main
-          file_pattern: "cstrike/**"
+          # Important: We commit cstrike/ AND _excludes/ to persist the cache
+          file_pattern: "cstrike/** _excludes/**"
