@@ -1,1 +1,7 @@
 models/parachute/
+parachute/parachute_carbon.dx80.vtx
+parachute/parachute_carbon.dx90.vtx
+parachute/parachute_carbon.mdl
+parachute/parachute_carbon.sw.vtx
+parachute/parachute_carbon.vvd
+parachute/parachute_carbon.xbox.vtx
